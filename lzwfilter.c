@@ -25,7 +25,7 @@
  */
 
 static const char *usage =
-" Usage:     LZWFILTER [-options] [< infile] [> outfile]\n\n"
+" Usage:     LZW-AB [-options] [< infile] [> outfile]\n\n"
 " Operation: compression is default, use -d to decompress\n\n"
 " Options:  -d     = decompress\n"
 "           -h     = display this \"help\" message\n"
@@ -36,24 +36,43 @@ static const char *usage =
 "           -v     = verbose (display ratio and checksum)\n\n"
 " Web:       Visit www.github.com/dbry/lzw-ab for latest version and info\n\n";
 
-static int read_checksum, write_checksum;
+static unsigned char read_buffer [65536], write_buffer [65536];
 static size_t read_count, write_count;
+static int read_checksum, write_checksum;
+static int read_head, read_tail, write_head;
 
 static int read_buff (void)
 {
-    int value = getchar ();
+    int value;
 
-    if (value != EOF) {
+    if (read_head == read_tail)
+        read_tail = (read_head = 0) + fread (read_buffer, 1, sizeof (read_buffer), stdin);
+
+    if (read_head < read_tail) {
+        value = read_buffer [read_head++];
         read_checksum = read_checksum * 3 + (unsigned char) value;
         read_count++;
     }
+    else
+        value = EOF;
 
     return value;
 }
 
 static void write_buff (int value)
 {
-    putchar (value);
+    if (value == EOF) {
+        fwrite (write_buffer, 1, write_head, stdout);
+        return;
+    }
+
+    write_buffer [write_head++] = value;
+
+    if (write_head == sizeof (write_buffer)) {
+        fwrite (write_buffer, 1, write_head, stdout);
+        write_head = 0;
+    }
+
     write_checksum = write_checksum * 3 + (unsigned char) value;
     write_count++;
 }
@@ -123,9 +142,11 @@ int main (int argc, char **argv)
             fprintf (stderr, "lzw_decompress() returned non-zero!\n");
             return 1;
         }
+
+        write_buff (EOF);
             
         if (verbose && write_count)
-            fprintf (stderr, "output checksum = %x, ratio = %.2f\n", write_checksum, read_count * 100.0 / write_count);
+            fprintf (stderr, "output checksum = %x, ratio = %.2f%%\n", write_checksum, read_count * 100.0 / write_count);
     }
     else {
         if (lzw_compress (write_buff, read_buff, maxbits)) {
@@ -133,8 +154,10 @@ int main (int argc, char **argv)
             return 1;
         }
 
+        write_buff (EOF);
+
         if (verbose && read_count)
-            fprintf (stderr, "source checksum = %x, ratio = %.2f\n", read_checksum, write_count * 100.0 / read_count);
+            fprintf (stderr, "source checksum = %x, ratio = %.2f%%\n", read_checksum, write_count * 100.0 / read_count);
     }
 
     return 0;
