@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////
 //                            **** LZW-AB ****                            //
 //               Adjusted Binary LZW Compressor/Decompressor              //
-//                     Copyright (c) 2016 David Bryant                    //
+//                  Copyright (c) 2016-2020 David Bryant                  //
 //                           All Rights Reserved                          //
 //      Distributed under the BSD Software License (see license.txt)      //
 ////////////////////////////////////////////////////////////////////////////
@@ -20,12 +20,12 @@
 /* This module provides a command-line filter for testing the lzw library.
  * It can also optionally calculate and display the compression ratio and
  * a simple checksum for informational purposes. Other command-line
- * arguments select decoding mode or the maximum symbol size (9 to 12 bits)
+ * arguments select decoding mode or the maximum symbol size (9 to 16 bits)
  * for encoding.
  */
 
 static const char *usage =
-" Usage:     LZW-AB [-options] [< infile] [> outfile]\n\n"
+" Usage:     lzwfilter [-options] [< infile] [> outfile]\n\n"
 " Operation: compression is default, use -d to decompress\n\n"
 " Options:  -d     = decompress\n"
 "           -h     = display this \"help\" message\n"
@@ -33,6 +33,10 @@ static const char *usage =
 "           -2     = maximum symbol size = 10 bits\n"
 "           -3     = maximum symbol size = 11 bits\n"
 "           -4     = maximum symbol size = 12 bits (default)\n"
+"           -5     = maximum symbol size = 13 bits\n"
+"           -6     = maximum symbol size = 14 bits\n"
+"           -7     = maximum symbol size = 15 bits\n"
+"           -8     = maximum symbol size = 16 bits\n"
 "           -v     = verbose (display ratio and checksum)\n\n"
 " Web:       Visit www.github.com/dbry/lzw-ab for latest version and info\n\n";
 
@@ -101,6 +105,22 @@ int main (int argc, char **argv)
 
                     case '4':
                         maxbits = 12;
+                        break;
+
+                    case '5':
+                        maxbits = 13;
+                        break;
+
+                    case '6':
+                        maxbits = 14;
+                        break;
+
+                    case '7':
+                        maxbits = 15;
+                        break;
+
+                    case '8':
+                        maxbits = 16;
                         break;
 
                     case 'D': case 'd':

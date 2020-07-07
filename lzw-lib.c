@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////
 //                            **** LZW-AB ****                            //
 //               Adjusted Binary LZW Compressor/Decompressor              //
-//                     Copyright (c) 2016 David Bryant                    //
+//                  Copyright (c) 2016-2020 David Bryant                  //
 //                           All Rights Reserved                          //
 //      Distributed under the BSD Software License (see license.txt)      //
 ////////////////////////////////////////////////////////////////////////////
@@ -45,6 +45,10 @@
  *    10-bit     4352 bytes    3072 bytes
  *    11-bit     9472 bytes    7168 bytes
  *    12-bit     19712 bytes   15360 bytes
+ *    13-bit     40192 bytes   31744 bytes
+ *    14-bit     81152 bytes   64512 bytes
+ *    15-bit     163072 bytes  130048 bytes
+ *    16-bit     326912 bytes  261120 bytes
  * 
  * This implementation uses malloc(), but obviously an embedded version could
  * use static arrays instead if desired (assuming that the maxbits was
@@ -68,9 +72,11 @@
  */
 
 #define WRITE_CODE(code,maxcode) do {                           \
-    int code_bits = (maxcode) < 1024 ?                          \
-        ((maxcode) < 512 ? 8 : 9) :                             \
-        ((maxcode) < 2048 ? 10 : 11);                           \
+    int code_bits = (maxcode) < 4096 ?                          \
+        ((maxcode) < 1024  ? 8  + ((maxcode) >= 512)   :        \
+                             10 + ((maxcode) >= 2048)) :        \
+        ((maxcode) < 16384 ? 12 + ((maxcode) >= 8192)  :        \
+                             14 + ((maxcode) >= 32768));        \
     int extras = (1 << (code_bits + 1)) - (maxcode) - 1;        \
     if ((code) < extras) {                                      \
         shifter |= ((long)(code) << bits);                      \
@@ -96,11 +102,11 @@ int lzw_compress (void (*dst)(int), int (*src)(void), int maxbits)
 {
     int next = FIRST_STRING, prefix = NULL_CODE, bits = 0, total_codes, c;
     unsigned long input_bytes = 0, output_bytes = 0;
-    short *first_references, *next_references;
+    unsigned short *first_references, *next_references;
     unsigned char *terminators;
     unsigned long shifter = 0;
 
-    if (maxbits < 9 || maxbits > 12)    // check for valid "maxbits" setting
+    if (maxbits < 9 || maxbits > 16)    // check for valid "maxbits" setting
         return 1;
 
     // based on the "maxbits" parameter, compute total codes and allocate dictionary storage
@@ -215,19 +221,19 @@ int lzw_decompress (void (*dst)(int), int (*src)(void))
     int read_byte, next = FIRST_STRING, prefix = CLEAR_CODE, bits = 0, total_codes;
     unsigned char *terminators, *reverse_buffer;
     unsigned long shifter = 0;
-    short *prefixes;
+    unsigned short *prefixes;
 
-    if ((read_byte = ((*src)())) == EOF || (read_byte & 0xfc))  //sanitize first byte
+    if ((read_byte = ((*src)())) == EOF || (read_byte & 0xf8))  //sanitize first byte
         return 1;
 
     // based on the "maxbits" parameter, compute total codes and allocate dictionary storage
 
-    total_codes = 512 << (read_byte & 0x3);
+    total_codes = 512 << (read_byte & 0x7);
     reverse_buffer = malloc ((total_codes - 256) * sizeof (reverse_buffer [0]));
     prefixes = malloc ((total_codes - 256) * sizeof (prefixes [0]));
     terminators = malloc ((total_codes - 256) * sizeof (terminators [0]));
 
-    if (!reverse_buffer || !prefixes || !terminators)       // check for mallco() failure
+    if (!reverse_buffer || !prefixes || !terminators)       // check for malloc() failure
         return 1;
 
     // This is the main loop where we read input symbols. The values range from 0 to the code value
@@ -236,8 +242,10 @@ int lzw_decompress (void (*dst)(int), int (*src)(void))
     // stream is actually an error because we should have gotten the END_CODE first.
 
     while (1) {
-        int code_bits = next < 1024 ? (next < 512 ? 8 : 9) : (next < 2048 ? 10 : 11), code;
-        int extras = (1 << (code_bits + 1)) - next - 1;
+        int code_bits = next < 4096 ?
+            (next < 1024  ? 8  + (next >= 512)  : 10 + (next >= 2048)) :
+            (next < 16384 ? 12 + (next >= 8192) : 14 + (next >= 32768));
+        int extras = (1 << (code_bits + 1)) - next - 1, code;
 
         do {
             if ((read_byte = ((*src)())) == EOF) {
