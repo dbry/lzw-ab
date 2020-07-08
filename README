@@ -15,7 +15,7 @@ decompressor in Z-80 assembly language for speed! Depending on the maximum
 symbol size selected, the implementation can require from 1024 to 261120
 bytes of RAM for decoding (and about half again more for encoding).
 
-The symbols are stored in adjusted binary, which provides somewhat better
+The symbols are stored in "adjusted binary" which provides somewhat better
 compression (with virtually no speed penalty) compared to the fixed word
 sizes normally used. To ensure good performance on data with varying
 characteristics (like executable images) the encoder resets as soon as the
