@@ -11,6 +11,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "lzw-lib.h"
 
 /* This module provides a command-line test harness for the lzw library.
@@ -78,6 +83,30 @@ static void check_buff (int value)
     check_buffer_index++;
 }
 
+#ifdef _WIN32
+
+long long DoGetFileSize (FILE *hFile)
+{
+    LARGE_INTEGER Size;
+    HANDLE        fHandle;
+
+    if (hFile == NULL)
+        return 0;
+
+    fHandle = (HANDLE)_get_osfhandle(_fileno(hFile));
+    if (fHandle == INVALID_HANDLE_VALUE)
+        return 0;
+
+    Size.u.LowPart = GetFileSize(fHandle, &Size.u.HighPart);
+
+    if (Size.u.LowPart == INVALID_FILE_SIZE && GetLastError() != NO_ERROR)
+        return 0;
+
+    return (long long)Size.QuadPart;
+}
+
+#else
+
 long long DoGetFileSize (FILE *hFile)
 {
     struct stat statbuf;
@@ -87,6 +116,8 @@ long long DoGetFileSize (FILE *hFile)
 
     return (long long) statbuf.st_size;
 }
+
+#endif
 
 int main (int argc, char **argv)
 {
@@ -156,6 +187,7 @@ int main (int argc, char **argv)
         checked++;
 
         for (maxbits = 9; maxbits <= 16; ++maxbits) {
+            int res;
 
             read_buffer_index = write_buffer_index = write_buffer_wrapped = 0;
 
@@ -182,7 +214,7 @@ int main (int argc, char **argv)
             read_buffer_size = write_buffer_index;
             read_buffer_index = 0;
 
-            int res = lzw_decompress (check_buff, read_buff);
+            res = lzw_decompress (check_buff, read_buff);
 
             read_buffer = check_buffer;
             read_buffer_size = check_buffer_size;
