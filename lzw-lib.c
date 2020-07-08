@@ -24,16 +24,16 @@
  * the present implementation is embedded systems, and so emphasis was placed
  * on simplicity, fast execution, and minimal RAM usage.
  *
- * The symbols are stored in adjusted binary, which provides considerably
- * better compression performance with virtually no speed penalty compared to
- * the fixed sizes normally used. To ensure good performance on data with
- * varying characteristics (like executable images) the encoder resets as
- * soon as the dictionary is full. Also, worst-case performance is limited
- * to about 8% inflation by catching poor performance and forcing an early
- * reset before longer symbols are sent.
+ * The symbols are stored in "adjusted binary" which provides somewhat better
+ * compression (with virtually no speed penalty) compared to the fixed word
+ * sizes normally used. To ensure good performance on data with varying
+ * characteristics (like executable images) the encoder resets as soon as the
+ * dictionary is full. Also, worst-case performance is limited to about 8%
+ * inflation by catching poor performance and forcing an early reset before
+ * longer symbols are sent.
  *
  * The maximum symbol size is configurable on the encode side (from 9 bits
- * to 12 bits) and determines the RAM footprint required by both sides and,
+ * to 16 bits) and determines the RAM footprint required by both sides and,
  * to a large extent, the compression performance. This information is
  * communicated to the decoder in the first stream byte so that it can
  * allocate accordingly. The RAM requirements are as follows:
@@ -92,7 +92,7 @@
 } while (0)
 
 /* LZW compression function. Bytes (8-bit) are read and written through callbacks and the
- * "maxbits" parameter specifies the maximum symbol size (9-12), which in turn determines
+ * "maxbits" parameter specifies the maximum symbol size (9-16), which in turn determines
  * the RAM requirement and, to a large extent, the level of compression achievable. A return
  * value of EOF from the "src" callback terminates the compression process. A non-zero return
  * value indicates one of the two possible errors -- bad "maxbits" param or failed malloc().
