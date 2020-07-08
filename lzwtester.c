@@ -30,28 +30,33 @@
 
 static const char *usage =
 " Usage:     lzwtester [option] file [...]\n\n"
-" Option:    -f = fuzz test (randomly corrupt compressed data)\n\n"
+" Options:   -1 ... -8 = test using only specified max symbol size (9 - 16)\n"
+"            -0        = cycle through all maximum symbol sizes (default)\n"
+"            -f        = fuzz test (randomly corrupt compressed data)\n\n"
 " Web:       Visit www.github.com/dbry/lzw-ab for latest version and info\n\n";
 
-static unsigned char *read_buffer, *write_buffer, *check_buffer;
-static int read_buffer_size, read_buffer_index;
-static int write_buffer_size, write_buffer_index, write_buffer_wrapped;
-static int check_buffer_size, check_buffer_index, check_buffer_wrapped, check_buffer_byte_errors, check_buffer_first_error;
-static int fuzz_testing;
+typedef struct {
+    int size, index, wrapped, byte_errors, first_error, fuzz_testing;
+    unsigned char *buffer;
+} streamer;
 
-static int read_buff (void)
+static int read_buff (void *ctx)
 {
-    if (read_buffer_index == read_buffer_size)
+    streamer *stream = ctx;
+
+    if (stream->index == stream->size)
         return EOF;
 
-    return read_buffer [read_buffer_index++];
+    return stream->buffer [stream->index++];
 }
 
-static void write_buff (int value)
+static void write_buff (int value, void *ctx)
 {
+    streamer *stream = ctx;
+
     // for fuzz testing, randomly corrupt 1 byte in every 65536 (on average)
 
-    if (fuzz_testing) {
+    if (stream->fuzz_testing) {
         static unsigned long long kernel = 0x3141592653589793;
         kernel = ((kernel << 4) - kernel) ^ 1;
         kernel = ((kernel << 4) - kernel) ^ 1;
@@ -61,26 +66,28 @@ static void write_buff (int value)
             value ^= (int)(kernel >> 40);
     }
 
-    if (write_buffer_index == write_buffer_size) {
-        write_buffer_index = 0;
-        write_buffer_wrapped++;
+    if (stream->index == stream->size) {
+        stream->index = 0;
+        stream->wrapped++;
     }
 
-    write_buffer [write_buffer_index++] = value;
+    stream->buffer [stream->index++] = value;
 }
 
-static void check_buff (int value)
+static void check_buff (int value, void *ctx)
 {
-    if (check_buffer_index == check_buffer_size) {
-        check_buffer_wrapped++;
+    streamer *stream = ctx;
+
+    if (stream->index == stream->size) {
+        stream->wrapped++;
         return;
     }
 
-    if (check_buffer [check_buffer_index] != value)
-        if (!check_buffer_byte_errors++)
-            check_buffer_first_error = check_buffer_index;
+    if (stream->buffer [stream->index] != value)
+        if (!stream->byte_errors++)
+            stream->first_error = stream->index;
 
-    check_buffer_index++;
+    stream->index++;
 }
 
 #ifdef _WIN32
@@ -121,7 +128,12 @@ long long DoGetFileSize (FILE *hFile)
 
 int main (int argc, char **argv)
 {
-    int index, checked = 0, skipped = 0, errors = 0;
+    int index, checked = 0, skipped = 0, errors = 0, set_maxbits = 0;
+    streamer reader, writer, checker;
+
+    memset (&reader, 0, sizeof (reader));
+    memset (&writer, 0, sizeof (writer));
+    memset (&checker, 0, sizeof (checker));
 
     if (argc < 2) {
         printf ("%s", usage);
@@ -135,7 +147,16 @@ int main (int argc, char **argv)
         FILE *infile;
 
         if (!strcmp (filename, "-f")) {
-            fuzz_testing = 1;
+            writer.fuzz_testing = 1;
+            continue;
+        }
+
+        if (strlen (filename) == 2 && filename [0] == '-' && filename [1] >= '0' && filename [1] <= '8') {
+            if (filename [1] > '0')
+                set_maxbits = filename [1] - '0' + 8;
+            else
+                set_maxbits = 0;
+
             continue;
         }
 
@@ -161,24 +182,24 @@ int main (int argc, char **argv)
             continue;
         }
 
-        read_buffer = malloc (read_buffer_size = (int) file_size);
-        write_buffer = malloc (write_buffer_size = (int) (file_size + (file_size >> 2) + 10));
+        reader.buffer = malloc (reader.size = (int) file_size);
+        writer.buffer = malloc (writer.size = (int) (file_size + (file_size >> 2) + 10));
 
-        if (!read_buffer || !write_buffer) {
+        if (!reader.buffer || !writer.buffer) {
             printf ("\nfile %s is too big!\n", filename);
-            if (write_buffer) free (write_buffer);
-            if (read_buffer) free (read_buffer);
+            if (writer.buffer) free (writer.buffer);
+            if (reader.buffer) free (reader.buffer);
             skipped++;
             continue;
         }
 
-        bytes_read = fread (read_buffer, 1, (int) file_size, infile);
+        bytes_read = fread (reader.buffer, 1, (int) file_size, infile);
         fclose (infile);
 
         if (bytes_read != (int) file_size) {
             printf ("\nfile %s could not be read!\n", filename);
-            free (write_buffer);
-            free (read_buffer);
+            free (writer.buffer);
+            free (reader.buffer);
             skipped++;
             continue;
         }
@@ -186,38 +207,38 @@ int main (int argc, char **argv)
         printf ("\n");
         checked++;
 
-        for (maxbits = 9; maxbits <= 16; ++maxbits) {
+        for (maxbits = set_maxbits ? set_maxbits : 9; maxbits <= (set_maxbits ? set_maxbits : 16); ++maxbits) {
             int res;
 
-            read_buffer_index = write_buffer_index = write_buffer_wrapped = 0;
+            reader.index = writer.index = writer.wrapped = 0;
 
-            if (lzw_compress (write_buff, read_buff, maxbits)) {
+            if (lzw_compress (write_buff, &writer, read_buff, &reader, maxbits)) {
                 printf ("lzw_compress() returned error on file %s, maxbits = %d\n", filename, maxbits);
                 errors++;
                 continue;
             }
 
-            if (write_buffer_wrapped) {
+            if (writer.wrapped) {
                 printf ("over 25%% inflation on file %s, maxbits = %d!\n", filename, maxbits);
                 errors++;
                 continue;
             }
 
             printf ("file %s, maxbits = %2d: %d bytes --> %d bytes, %.2f%%\n", filename, maxbits,
-                read_buffer_index, write_buffer_index, write_buffer_index * 100.0 / read_buffer_index);
+                reader.index, writer.index, writer.index * 100.0 / reader.index);
 
-            check_buffer = read_buffer;
-            check_buffer_size = read_buffer_size;
-            check_buffer_wrapped = check_buffer_byte_errors = check_buffer_index = 0;
+            checker.buffer = reader.buffer;
+            checker.size = reader.size;
+            checker.wrapped = checker.byte_errors = checker.index = 0;
 
-            read_buffer = write_buffer;
-            read_buffer_size = write_buffer_index;
-            read_buffer_index = 0;
+            reader.buffer = writer.buffer;
+            reader.size = writer.index;
+            reader.index = 0;
 
-            res = lzw_decompress (check_buff, read_buff);
+            res = lzw_decompress (check_buff, &checker, read_buff, &reader);
 
-            read_buffer = check_buffer;
-            read_buffer_size = check_buffer_size;
+            reader.buffer = checker.buffer;
+            reader.size = checker.size;
 
             if (res) {
                 printf ("lzw_decompress() returned error on file %s, maxbits = %d\n", filename, maxbits);
@@ -225,19 +246,19 @@ int main (int argc, char **argv)
                 continue;
             }
 
-            if (check_buffer_index != check_buffer_size || check_buffer_wrapped) {
+            if (checker.index != checker.size || checker.wrapped) {
                 printf ("byte count error on file %s, maxbits = %d\n", filename, maxbits);
                 errors++;
             }
-            else if (check_buffer_byte_errors) {
+            else if (checker.byte_errors) {
                 printf ("%d byte data errors on file %s starting at index %d, maxbits = %d\n",
-                    check_buffer_byte_errors, filename, check_buffer_first_error, maxbits);
+                    checker.byte_errors, filename, checker.first_error, maxbits);
                 errors++;
             }
         }
 
-        free (write_buffer);
-        free (read_buffer);
+        free (writer.buffer);
+        free (reader.buffer);
     }
 
     printf ("\n%d errors detected in %d files (%d skipped)\n\n", errors, checked, skipped);

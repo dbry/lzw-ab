@@ -40,22 +40,24 @@ static const char *usage =
 "           -v     = verbose (display ratio and checksum)\n\n"
 " Web:       Visit www.github.com/dbry/lzw-ab for latest version and info\n\n";
 
-static unsigned char read_buffer [65536], write_buffer [65536];
-static size_t read_count, write_count;
-static int read_checksum, write_checksum;
-static int read_head, read_tail, write_head;
+typedef struct {
+    unsigned char buffer [65536];
+    int checksum, head, tail;
+    size_t byte_count;
+} streamer;
 
-static int read_buff (void)
+static int read_buff (void *ctx)
 {
+    streamer *stream = ctx;
     int value;
 
-    if (read_head == read_tail)
-        read_tail = (read_head = 0) + fread (read_buffer, 1, sizeof (read_buffer), stdin);
+    if (stream->head == stream->tail)
+        stream->tail = (stream->head = 0) + fread (stream->buffer, 1, sizeof (stream->buffer), stdin);
 
-    if (read_head < read_tail) {
-        value = read_buffer [read_head++];
-        read_checksum = read_checksum * 3 + (unsigned char) value;
-        read_count++;
+    if (stream->head < stream->tail) {
+        value = stream->buffer [stream->head++];
+        stream->checksum = stream->checksum * 3 + (unsigned char) value;
+        stream->byte_count++;
     }
     else
         value = EOF;
@@ -63,29 +65,34 @@ static int read_buff (void)
     return value;
 }
 
-static void write_buff (int value)
+static void write_buff (int value, void *ctx)
 {
+    streamer *stream = ctx;
+
     if (value == EOF) {
-        fwrite (write_buffer, 1, write_head, stdout);
+        fwrite (stream->buffer, 1, stream->head, stdout);
         return;
     }
 
-    write_buffer [write_head++] = value;
+    stream->buffer [stream->head++] = value;
 
-    if (write_head == sizeof (write_buffer)) {
-        fwrite (write_buffer, 1, write_head, stdout);
-        write_head = 0;
+    if (stream->head == sizeof (stream->buffer)) {
+        fwrite (stream->buffer, 1, stream->head, stdout);
+        stream->head = 0;
     }
 
-    write_checksum = write_checksum * 3 + (unsigned char) value;
-    write_count++;
+    stream->checksum = stream->checksum * 3 + (unsigned char) value;
+    stream->byte_count++;
 }
 
 int main (int argc, char **argv)
 {
     int decompress = 0, maxbits = 12, verbose = 0, error = 0;
+    streamer reader, writer;
 
-    read_checksum = write_checksum = -1;
+    memset (&reader, 0, sizeof (reader));
+    memset (&writer, 0, sizeof (writer));
+    reader.checksum = writer.checksum = -1;
 
     while (--argc) {
         if ((**++argv == '-') && (*argv)[1])
@@ -158,26 +165,26 @@ int main (int argc, char **argv)
 #endif
 
     if (decompress) {
-        if (lzw_decompress (write_buff, read_buff)) {
+        if (lzw_decompress (write_buff, &writer, read_buff, &reader)) {
             fprintf (stderr, "lzw_decompress() returned non-zero!\n");
             return 1;
         }
 
-        write_buff (EOF);
+        write_buff (EOF, &writer);
             
-        if (verbose && write_count)
-            fprintf (stderr, "output checksum = %x, ratio = %.2f%%\n", write_checksum, read_count * 100.0 / write_count);
+        if (verbose && writer.byte_count)
+            fprintf (stderr, "output checksum = %x, ratio = %.2f%%\n", writer.checksum, reader.byte_count * 100.0 / writer.byte_count);
     }
     else {
-        if (lzw_compress (write_buff, read_buff, maxbits)) {
+        if (lzw_compress (write_buff, &writer, read_buff, &reader, maxbits)) {
             fprintf (stderr, "lzw_compress() returned non-zero!\n");
             return 1;
         }
 
-        write_buff (EOF);
+        write_buff (EOF, &writer);
 
-        if (verbose && read_count)
-            fprintf (stderr, "source checksum = %x, ratio = %.2f%%\n", read_checksum, write_count * 100.0 / read_count);
+        if (verbose && reader.byte_count)
+            fprintf (stderr, "source checksum = %x, ratio = %.2f%%\n", reader.checksum, writer.byte_count * 100.0 / reader.byte_count);
     }
 
     return 0;
