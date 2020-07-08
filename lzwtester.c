@@ -16,7 +16,7 @@
 #include <windows.h>
 #endif
 
-#include "lzw-lib.h"
+#include "lzwlib.h"
 
 /* This module provides a command-line test harness for the lzw library.
  * Given a list of files, it will read each one and byte-for-byte verify
@@ -29,7 +29,7 @@
  */
 
 static const char *usage =
-" Usage:     lzwtester [option] file [...]\n\n"
+" Usage:     lzwtester [options] file [...]\n\n"
 " Options:   -1 ... -8 = test using only specified max symbol size (9 - 16)\n"
 "            -0        = cycle through all maximum symbol sizes (default)\n"
 "            -f        = fuzz test (randomly corrupt compressed data)\n\n"
