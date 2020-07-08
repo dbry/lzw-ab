@@ -23,11 +23,11 @@ dictionary is full. Also, worst-case performance is limited to about 8%
 inflation by catching poor performance and forcing an early reset before
 longer symbols are sent.
 
-LZW-AB consists of three standard C files (the library, a command-line
-demo using pipes, and a command-line test harness) and builds with a single
-command on most platforms. It has been designed with maximum portability
-in mind and should work correctly on big-endian as well as little-endian
-machines.
+LZW-AB consists of three standard C files: the library, a command-line
+filter demo using pipes, and a command-line test harness. Each program
+builds with a single command on most platforms. It has been designed with
+maximum portability in mind and should work correctly on big-endian as well
+as little-endian machines.
 
 Linux:
 % gcc -O3 lzwfilter.c lzwlib.c -o lzwfilter
@@ -40,3 +40,22 @@ Darwin/Mac:
 MS Visual Studio:
 cl -O2 lzwfilter.c lzwlib.c
 cl -O2 lzwtester.c lzwlib.c
+
+There are Windows binaries (built on MinGW) for the filter and the tester on the
+GitHub release page (v2). The "help" display for the filter looks like this:
+
+ Usage:     lzwfilter [-options] [< infile] [> outfile]
+
+ Operation: compression is default, use -d to decompress
+
+ Options:  -d     = decompress
+           -h     = display this "help" message
+           -1     = maximum symbol size = 9 bits
+           -2     = maximum symbol size = 10 bits
+           -3     = maximum symbol size = 11 bits
+           -4     = maximum symbol size = 12 bits (default)
+           -5     = maximum symbol size = 13 bits
+           -6     = maximum symbol size = 14 bits
+           -7     = maximum symbol size = 15 bits
+           -8     = maximum symbol size = 16 bits
+           -v     = verbose (display ratio and checksum)
