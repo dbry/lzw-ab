@@ -9,7 +9,7 @@
 #ifndef LZWLIB_H_
 #define LZWLIB_H_
 
-int lzw_compress (void (*dst)(int), int (*src)(void), int maxbits);
-int lzw_decompress (void (*dst)(int), int (*src)(void));
+int lzw_compress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void *srcctx, int maxbits);
+int lzw_decompress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void *srcctx);
 
 #endif /* LZWLIB_H_ */

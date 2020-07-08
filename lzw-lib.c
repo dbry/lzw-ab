@@ -87,7 +87,7 @@
         bits += code_bits;                                      \
         shifter |= ((long)(((code) + extras) & 1) << bits++);   \
     }                                                           \
-    do { (*dst)(shifter); shifter >>= 8; output_bytes++;        \
+    do { (*dst)(shifter,dstctx); shifter >>= 8; output_bytes++; \
     } while ((bits -= 8) >= 8);                                 \
 } while (0)
 
@@ -98,7 +98,7 @@
  * value indicates one of the two possible errors -- bad "maxbits" param or failed malloc().
  */
 
-int lzw_compress (void (*dst)(int), int (*src)(void), int maxbits)
+int lzw_compress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void *srcctx, int maxbits)
 {
     int next = FIRST_STRING, prefix = NULL_CODE, bits = 0, total_codes, c;
     unsigned long input_bytes = 0, output_bytes = 0;
@@ -125,14 +125,14 @@ int lzw_compress (void (*dst)(int), int (*src)(void), int maxbits)
     memset (next_references, 0, (total_codes - 256) * sizeof (next_references [0]));
     memset (terminators, 0, (total_codes - 256) * sizeof (terminators [0]));
 
-    (*dst)(maxbits - 9);    // first byte in output stream indicates the maximum symbol bits
+    (*dst)(maxbits - 9, dstctx);    // first byte in output stream indicates the maximum symbol bits
 
     // This is the main loop where we read input bytes and compress them. We always keep track of the
     // "prefix", which represents a pending byte (if < 256) or string entry (if >= FIRST_STRING) that
     // has not been sent to the decoder yet. The output symbols are kept in the "shifter" and "bits"
     // variables and are sent to the output every time 8 bits are available (done in the macro).
 
-    while ((c = (*src)()) != EOF) {
+    while ((c = (*src)(srcctx)) != EOF) {
         int cti;                            // coding table index
 
         input_bytes++;
@@ -201,7 +201,7 @@ int lzw_compress (void (*dst)(int), int (*src)(void), int maxbits)
     WRITE_CODE (next, next);        // the maximum possible code is always reserved for our END_CODE
 
     if (bits)                       // finally, flush any pending bits from the shifter
-        (*dst)(shifter);
+        (*dst)(shifter, dstctx);
 
     free (terminators); free (next_references); free (first_references);
     return 0;
@@ -216,14 +216,14 @@ int lzw_compress (void (*dst)(int), int (*src)(void), int maxbits)
  * terminates naturally with END_CODE.
  */
 
-int lzw_decompress (void (*dst)(int), int (*src)(void))
+int lzw_decompress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void *srcctx)
 {
     int read_byte, next = FIRST_STRING, prefix = CLEAR_CODE, bits = 0, total_codes;
     unsigned char *terminators, *reverse_buffer;
     unsigned long shifter = 0;
     unsigned short *prefixes;
 
-    if ((read_byte = ((*src)())) == EOF || (read_byte & 0xf8))  //sanitize first byte
+    if ((read_byte = ((*src)(srcctx))) == EOF || (read_byte & 0xf8))  //sanitize first byte
         return 1;
 
     // based on the "maxbits" parameter, compute total codes and allocate dictionary storage
@@ -248,7 +248,7 @@ int lzw_decompress (void (*dst)(int), int (*src)(void))
         int extras = (1 << (code_bits + 1)) - next - 1, code;
 
         do {
-            if ((read_byte = ((*src)())) == EOF) {
+            if ((read_byte = ((*src)(srcctx))) == EOF) {
                 free (terminators); free (prefixes); free (reverse_buffer);
                 return 1;
             }
@@ -267,7 +267,7 @@ int lzw_decompress (void (*dst)(int), int (*src)(void))
 
         if (code >= extras) {
             if (!bits) {
-                if ((read_byte = ((*src)())) == EOF) {
+                if ((read_byte = ((*src)(srcctx))) == EOF) {
                     free (terminators); free (prefixes); free (reverse_buffer);
                     return 1;
                 }
@@ -286,7 +286,7 @@ int lzw_decompress (void (*dst)(int), int (*src)(void))
         else if (code == CLEAR_CODE)        // otherwise check for a CLEAR_CODE to start over early
             next = FIRST_STRING;
         else if (prefix == CLEAR_CODE) {    // this only happens at the first symbol which is always sent
-            (*dst)(code);                   // literally and becomes our initial prefix
+            (*dst)(code, dstctx);           // literally and becomes our initial prefix
             next++;
         }
         // Otherwise we have a valid prefix so we step through the string from end to beginning storing the
@@ -304,11 +304,11 @@ int lzw_decompress (void (*dst)(int), int (*src)(void))
             c = *--rbp;     // the first byte in this string is the terminator for the last string, which is
                             // the one that we'll create a new dictionary entry for this time
 
-            do (*dst)(*rbp);                        // send string in corrected order (except for the terminator
+            do (*dst)(*rbp, dstctx);                // send string in corrected order (except for the terminator
             while (rbp-- != reverse_buffer);        // which we don't know yet)
 
             if (code == next-1)
-                (*dst)(c);
+                (*dst)(c,dstctx);
 
             prefixes [next - 1 - 256] = prefix;     // now update the next dictionary entry with the new string
             terminators [next - 1 - 256] = c;       // (but we're always one behind, so it's not the string just sent)
