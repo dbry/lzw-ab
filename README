@@ -30,13 +30,13 @@ in mind and should work correctly on big-endian as well as little-endian
 machines.
 
 Linux:
-% gcc -O3 lzwfilter.c lzw-lib.c -o lzwfilter
-% gcc -O3 lzwtester.c lzw-lib.c -o lzwtester
+% gcc -O3 lzwfilter.c lzwlib.c -o lzwfilter
+% gcc -O3 lzwtester.c lzwlib.c -o lzwtester
 
 Darwin/Mac:
-% clang -O3 lzwfilter.c lzw-lib.c -o lzwfilter
-% clang -O3 lzwtester.c lzw-lib.c -o lzwtester
+% clang -O3 lzwfilter.c lzwlib.c -o lzwfilter
+% clang -O3 lzwtester.c lzwlib.c -o lzwtester
 
 MS Visual Studio:
-cl -O2 lzwfilter.c lzw-lib.c
-cl -O2 lzwtester.c lzw-lib.c
+cl -O2 lzwfilter.c lzwlib.c
+cl -O2 lzwtester.c lzwlib.c

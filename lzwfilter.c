@@ -15,7 +15,7 @@
 #include <fcntl.h>
 #endif
 
-#include "lzw-lib.h"
+#include "lzwlib.h"
 
 /* This module provides a command-line filter for testing the lzw library.
  * It can also optionally calculate and display the compression ratio and

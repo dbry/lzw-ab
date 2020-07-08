@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "lzw-lib.h"
+#include "lzwlib.h"
 
 /* This library implements the LZW general-purpose data compression algorithm.
  * The algorithm was originally described as a hardware implementation by
@@ -96,6 +96,8 @@
  * the RAM requirement and, to a large extent, the level of compression achievable. A return
  * value of EOF from the "src" callback terminates the compression process. A non-zero return
  * value indicates one of the two possible errors -- bad "maxbits" param or failed malloc().
+ * There are contexts (void pointers) that are passed to the callbacks to easily facilitate
+ * multiple instances of the compression operation (but simple applications can ignore these).
  */
 
 int lzw_compress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void *srcctx, int maxbits)
@@ -210,10 +212,12 @@ int lzw_compress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void 
 /* LZW decompression function. Bytes (8-bit) are read and written through callbacks. The
  * "maxbits" parameter is read as the first byte in the stream and controls how much memory
  * is allocated for decoding. A return value of EOF from the "src" callback terminates the
- * compression process (although this should not normally occur). A non-zero return value
+ * decompression process (although this should not normally occur). A non-zero return value
  * indicates an error, which in this case can be a bad "maxbits" read from the stream, a
- * failed malloc(), or if an EOF is read from the input stream before the compression
- * terminates naturally with END_CODE.
+ * failed malloc(), or if an EOF is read from the input stream before the decompression
+ * terminates naturally with END_CODE. There are contexts (void pointers) that are passed
+ * to the callbacks to easily facilitate multiple instances of the decompression operation
+ * (but simple applications can ignore these).
  */
 
 int lzw_decompress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void *srcctx)
