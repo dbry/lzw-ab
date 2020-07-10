@@ -32,7 +32,8 @@ static const char *usage =
 " Usage:     lzwtester [options] file [...]\n\n"
 " Options:   -1 ... -8 = test using only specified max symbol size (9 - 16)\n"
 "            -0        = cycle through all maximum symbol sizes (default)\n"
-"            -f        = fuzz test (randomly corrupt compressed data)\n\n"
+"            -f        = fuzz test (randomly corrupt compressed data)\n"
+"            -q        = quiet mode (only reports errors and summary)\n\n"
 " Web:       Visit www.github.com/dbry/lzw-ab for latest version and info\n\n";
 
 typedef struct {
@@ -128,7 +129,7 @@ long long DoGetFileSize (FILE *hFile)
 
 int main (int argc, char **argv)
 {
-    int index, checked = 0, skipped = 0, errors = 0, set_maxbits = 0;
+    int index, checked = 0, tests = 0, skipped = 0, errors = 0, set_maxbits = 0, quiet_mode = 0;
     streamer reader, writer, checker;
 
     memset (&reader, 0, sizeof (reader));
@@ -145,6 +146,11 @@ int main (int argc, char **argv)
         int bytes_read, maxbits;
         long long file_size;
         FILE *infile;
+
+        if (!strcmp (filename, "-q")) {
+            quiet_mode = 1;
+            continue;
+        }
 
         if (!strcmp (filename, "-f")) {
             writer.fuzz_testing = 1;
@@ -183,7 +189,7 @@ int main (int argc, char **argv)
         }
 
         reader.buffer = malloc (reader.size = (int) file_size);
-        writer.buffer = malloc (writer.size = (int) (file_size + (file_size >> 2) + 10));
+        writer.buffer = malloc (writer.size = (int) (file_size + file_size + 10));
 
         if (!reader.buffer || !writer.buffer) {
             printf ("\nfile %s is too big!\n", filename);
@@ -204,28 +210,27 @@ int main (int argc, char **argv)
             continue;
         }
 
-        printf ("\n");
+        if (!quiet_mode)
+            printf ("\n");
+
         checked++;
 
         for (maxbits = set_maxbits ? set_maxbits : 9; maxbits <= (set_maxbits ? set_maxbits : 16); ++maxbits) {
-            int res;
+            int res, got_error = 0;
 
             reader.index = writer.index = writer.wrapped = 0;
 
             if (lzw_compress (write_buff, &writer, read_buff, &reader, maxbits)) {
-                printf ("lzw_compress() returned error on file %s, maxbits = %d\n", filename, maxbits);
+                printf ("\nlzw_compress() returned error on file %s, maxbits = %d\n", filename, maxbits);
                 errors++;
                 continue;
             }
 
             if (writer.wrapped) {
-                printf ("over 25%% inflation on file %s, maxbits = %d!\n", filename, maxbits);
+                printf ("\nover 100%% inflation on file %s, maxbits = %d!\n", filename, maxbits);
                 errors++;
                 continue;
             }
-
-            printf ("file %s, maxbits = %2d: %d bytes --> %d bytes, %.2f%%\n", filename, maxbits,
-                reader.index, writer.index, writer.index * 100.0 / reader.index);
 
             checker.buffer = reader.buffer;
             checker.size = reader.size;
@@ -240,28 +245,44 @@ int main (int argc, char **argv)
             reader.buffer = checker.buffer;
             reader.size = checker.size;
 
-            if (res) {
-                printf ("lzw_decompress() returned error on file %s, maxbits = %d\n", filename, maxbits);
+            got_error = res || checker.index != checker.size || checker.wrapped || checker.byte_errors;
+
+            if (!quiet_mode || got_error)
+                printf ("file %s, maxbits = %2d: %d bytes --> %d bytes, %.2f%%\n", filename, maxbits,
+                    reader.size, writer.index, writer.index * 100.0 / reader.size);
+
+            if (got_error) {
+                if (res)
+                    printf ("decompressor returned an error\n");
+
+                if (!checker.index)
+                    printf ("decompression didn't generate any data\n");
+                else if (checker.index != checker.size)
+                    printf ("decompression terminated %d bytes early\n", checker.size - checker.index);
+                else if (checker.wrapped)
+                    printf ("decompression generated %d extra bytes\n", checker.wrapped);
+
+                if (checker.byte_errors)
+                    printf ("there were %d byte data errors starting at index %d\n",
+                        checker.byte_errors, checker.first_error);
+                else if (checker.index != checker.size || checker.wrapped)
+                    printf ("(but the data generated was all correct)\n");
+
+                printf ("\n");
                 errors++;
-                continue;
             }
 
-            if (checker.index != checker.size || checker.wrapped) {
-                printf ("byte count error on file %s, maxbits = %d\n", filename, maxbits);
-                errors++;
-            }
-            else if (checker.byte_errors) {
-                printf ("%d byte data errors on file %s starting at index %d, maxbits = %d\n",
-                    checker.byte_errors, filename, checker.first_error, maxbits);
-                errors++;
-            }
+            tests++;
         }
 
         free (writer.buffer);
         free (reader.buffer);
     }
 
-    printf ("\n%d errors detected in %d files (%d skipped)\n\n", errors, checked, skipped);
+    if (errors)
+        printf ("\n***** %d errors detected in %d tests using %d files (%d skipped) *****\n\n", errors, tests, checked, skipped);
+    else
+        printf ("\nsuccessfully ran %d tests using %d files (%d skipped) with no errors detected\n\n", tests, checked, skipped);
 
     return errors;
 }
