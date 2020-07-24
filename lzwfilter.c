@@ -32,11 +32,11 @@ static const char *usage =
 "           -1     = maximum symbol size = 9 bits\n"
 "           -2     = maximum symbol size = 10 bits\n"
 "           -3     = maximum symbol size = 11 bits\n"
-"           -4     = maximum symbol size = 12 bits (default)\n"
+"           -4     = maximum symbol size = 12 bits\n"
 "           -5     = maximum symbol size = 13 bits\n"
 "           -6     = maximum symbol size = 14 bits\n"
 "           -7     = maximum symbol size = 15 bits\n"
-"           -8     = maximum symbol size = 16 bits\n"
+"           -8     = maximum symbol size = 16 bits (default)\n"
 "           -v     = verbose (display ratio and checksum)\n\n"
 " Web:       Visit www.github.com/dbry/lzw-ab for latest version and info\n\n";
 
@@ -87,7 +87,7 @@ static void write_buff (int value, void *ctx)
 
 int main (int argc, char **argv)
 {
-    int decompress = 0, maxbits = 12, verbose = 0, error = 0;
+    int decompress = 0, maxbits = 16, verbose = 0, error = 0;
     streamer reader, writer;
 
     memset (&reader, 0, sizeof (reader));

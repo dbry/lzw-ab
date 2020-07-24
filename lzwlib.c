@@ -23,41 +23,90 @@
  * basic technique, and this implementation is no different. The target of
  * the present implementation is embedded systems, and so emphasis was placed
  * on simplicity, fast execution, and minimal RAM usage.
+ * 
+ * This is a streaming compressor in that the data is not divided into blocks
+ * and no context information like dictionaries or Huffman tables are sent
+ * ahead of the compressed data (except for one byte to signal the maximum
+ * bit depth). This limits the maximum possible compression ratio compared to
+ * algorithms that significantly preprocess the data, but with the help of
+ * some enhancements to the LZW algorithm (described below) it is able to
+ * compress better than the UNIX "compress" utility (which is also LZW) and
+ * is in fact closer to and sometimes beats the compression level of "gzip".
  *
  * The symbols are stored in "adjusted binary" which provides somewhat better
- * compression (with virtually no speed penalty) compared to the fixed word
- * sizes normally used. To ensure good performance on data with varying
- * characteristics (like executable images) the encoder resets as soon as the
- * dictionary is full. Also, worst-case performance is limited to about 8%
- * inflation by catching poor performance and forcing an early reset before
- * longer symbols are sent.
+ * compression, with virtually no speed penalty, compared to the fixed word
+ * sizes normally used. These are sometimes called "phased-in" binary codes
+ * and their use in LZW is described here:
  *
- * The maximum symbol size is configurable on the encode side (from 9 bits
- * to 16 bits) and determines the RAM footprint required by both sides and,
- * to a large extent, the compression performance. This information is
- * communicated to the decoder in the first stream byte so that it can
- * allocate accordingly. The RAM requirements are as follows:
+ *   R. N. Horspool, "Improving LZW (data compression algorithm)", Data
+ *   Compression Conference, pp. 332-341, 1991.
+ *
+ * Earlier versions of this compressor would reset as soon as the dictionary
+ * became full to ensure good performance on heterogenous data (such as tar
+ * files or executable images). While trivial to implement, this is not
+ * particularly efficient with homogeneous data (or in general) because we
+ * spend a lot of time sending short symbols where the compression is poor.
+ *
+ * This newer version utilizes a technique such that once the dictionary is
+ * full, we restart at the beginning and recycle only those codes that were
+ * seen only once. We know this because they are not referenced by longer
+ * strings, and are easy to replace in the dictionary for the same reason.
+ * Since they have only been seen once it's also more likely that we will
+ * be replacing them with a more common string, and this is especially
+ * true if the data characteristics are changing.
+ *
+ * Replacing string codes in this manner has the interesting side effect that
+ * some older shorter strings that the removed strings were based on will
+ * possibly become unreferenced themselves and be recycled on the next pass.
+ * In this way, the entire dictionary constantly "churns" based on the
+ * incoming stream, thereby improving and adapting to optimal compression.
+ *
+ * Even with this technique there is still a possibility that a sudden change
+ * in the data characteristics will appear, resulting in significant negative
+ * compression (up to 100% for 16-bit codes). To detect this case we generate
+ * an exponentially decaying average of the current compression ratio and reset
+ * when this hits about 1.06, which limits worst case inflation to about 8%.
+ *
+ * The maximum symbol size is configurable on the encode side (from 9 bits to
+ * 16 bits) and determines the RAM footprint required by both sides and, to a
+ * large extent, the compression performance. This information is communicated
+ * to the decoder in the first stream byte so that it can allocate accordingly.
+ * The RAM requirements are as follows:
  *
  *    maximum    encoder RAM   decoder RAM
  *  symbol size  requirement   requirement
  * -----------------------------------------
- *     9-bit     1792 bytes    1024 bytes
- *    10-bit     4352 bytes    3072 bytes
- *    11-bit     9472 bytes    7168 bytes
- *    12-bit     19712 bytes   15360 bytes
- *    13-bit     40192 bytes   31744 bytes
- *    14-bit     81152 bytes   64512 bytes
- *    15-bit     163072 bytes  130048 bytes
- *    16-bit     326912 bytes  261120 bytes
- * 
+ *     9-bit      4096 bytes    2368 bytes
+ *    10-bit      8192 bytes    4992 bytes
+ *    11-bit     16384 bytes   10240 bytes
+ *    12-bit     32768 bytes   20736 bytes
+ *    13-bit     65536 bytes   41728 bytes
+ *    14-bit    131072 bytes   83712 bytes
+ *    15-bit    262144 bytes  167680 bytes
+ *    16-bit    524288 bytes  335616 bytes
+ *
  * This implementation uses malloc(), but obviously an embedded version could
  * use static arrays instead if desired (assuming that the maxbits was
  * controlled outside).
  */
 
-#define NULL_CODE       -1      // indicates a NULL prefix
+#define NULL_CODE       65535   // indicates a NULL prefix (must be unsigned short)
 #define CLEAR_CODE      256     // code to flush dictionary and restart decoder
 #define FIRST_STRING    257     // code of first dictionary string
+
+/* This macro determines the number of bits required to represent the given value,
+ * not counting the implied MSB. For GNU C it will use the provided built-in,
+ * otherwise a comparison tree is employed. Note that in the non-GNU case, only
+ * values up to 65535 (15 bits) are supported.
+ */
+
+#ifdef __GNUC__
+#define CODE_BITS(n) (31 - __builtin_clz(n))
+#else
+#define CODE_BITS(n) ((n) < 4096 ?                                      \
+            ((n) < 1024  ? 8  + ((n) >= 512)  : 10 + ((n) >= 2048)) :   \
+            ((n) < 16384 ? 12 + ((n) >= 8192) : 14 + ((n) >= 32768)))
+#endif
 
 /* This macro writes the adjusted-binary symbol "code" given the maximum
  * symbol "maxcode". A macro is used here just to avoid the duplication in
@@ -71,24 +120,21 @@
  * the 4 codes from 254 to 257 take 9 bits.
  */
 
-#define WRITE_CODE(code,maxcode) do {                           \
-    int code_bits = (maxcode) < 4096 ?                          \
-        ((maxcode) < 1024  ? 8  + ((maxcode) >= 512)   :        \
-                             10 + ((maxcode) >= 2048)) :        \
-        ((maxcode) < 16384 ? 12 + ((maxcode) >= 8192)  :        \
-                             14 + ((maxcode) >= 32768));        \
-    int extras = (1 << (code_bits + 1)) - (maxcode) - 1;        \
-    if ((code) < extras) {                                      \
-        shifter |= ((long)(code) << bits);                      \
-        bits += code_bits;                                      \
-    }                                                           \
-    else {                                                      \
-        shifter |= ((long)(((code) + extras) >> 1) << bits);    \
-        bits += code_bits;                                      \
-        shifter |= ((long)(((code) + extras) & 1) << bits++);   \
-    }                                                           \
-    do { (*dst)(shifter,dstctx); shifter >>= 8; output_bytes++; \
-    } while ((bits -= 8) >= 8);                                 \
+#define WRITE_CODE(code,maxcode) do {                               \
+    unsigned int code_bits = CODE_BITS (maxcode);                   \
+    unsigned int extras = (2 << code_bits) - (maxcode) - 1;         \
+    if ((code) < extras) {                                          \
+        shifter |= ((code) << bits);                                \
+        bits += code_bits;                                          \
+    }                                                               \
+    else {                                                          \
+        shifter |= ((((code) + extras) >> 1) << bits);              \
+        bits += code_bits;                                          \
+        shifter |= ((((code) + extras) & 1) << bits++);             \
+    }                                                               \
+    do { (*dst)(shifter,dstctx); shifter >>= 8;                     \
+        output_bytes += 256;                                        \
+    } while ((bits -= 8) >= 8);                                     \
 } while (0)
 
 /* LZW compression function. Bytes (8-bit) are read and written through callbacks and the
@@ -100,13 +146,19 @@
  * multiple instances of the compression operation (but simple applications can ignore these).
  */
 
+typedef struct {
+    unsigned short first_reference, next_reference, back_reference;
+    unsigned char terminator;
+} encoder_entry_t;
+
 int lzw_compress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void *srcctx, int maxbits)
 {
-    int next = FIRST_STRING, prefix = NULL_CODE, bits = 0, total_codes, c;
-    unsigned long input_bytes = 0, output_bytes = 0;
-    unsigned short *first_references, *next_references;
-    unsigned char *terminators;
-    unsigned long shifter = 0;
+    unsigned int maxcode = FIRST_STRING, next_string = FIRST_STRING, prefix = NULL_CODE, total_codes;
+    unsigned int dictionary_full = 0, available_entries, max_available_entries, max_available_code;
+    unsigned int input_bytes = 65536, output_bytes = 65536;
+    unsigned int shifter = 0, bits = 0;
+    encoder_entry_t *dictionary;
+    int c;
 
     if (maxbits < 9 || maxbits > 16)    // check for valid "maxbits" setting
         return 1;
@@ -114,18 +166,17 @@ int lzw_compress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void 
     // based on the "maxbits" parameter, compute total codes and allocate dictionary storage
 
     total_codes = 1 << maxbits;
-    first_references = malloc (total_codes * sizeof (first_references [0]));
-    next_references = malloc ((total_codes - 256) * sizeof (next_references [0]));
-    terminators = malloc ((total_codes - 256) * sizeof (terminators [0]));
+    dictionary = malloc (total_codes * sizeof (encoder_entry_t));
+    max_available_entries = total_codes - FIRST_STRING - 1;
+    max_available_code = total_codes - 2;
 
-    if (!first_references || !next_references || !terminators)
+    if (!dictionary)
         return 1;                       // failed malloc()
 
     // clear the dictionary
 
-    memset (first_references, 0, total_codes * sizeof (first_references [0]));
-    memset (next_references, 0, (total_codes - 256) * sizeof (next_references [0]));
-    memset (terminators, 0, (total_codes - 256) * sizeof (terminators [0]));
+    available_entries = max_available_entries;
+    memset (dictionary, 0, 256 * sizeof (encoder_entry_t));
 
     (*dst)(maxbits - 9, dstctx);    // first byte in output stream indicates the maximum symbol bits
 
@@ -135,58 +186,123 @@ int lzw_compress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void 
     // variables and are sent to the output every time 8 bits are available (done in the macro).
 
     while ((c = (*src)(srcctx)) != EOF) {
-        int cti;                            // coding table index
+        unsigned int cti;                   // coding table index
 
-        input_bytes++;
+        input_bytes += 256;
 
         if (prefix == NULL_CODE) {          // this only happens the very first byte when we don't yet have a prefix
             prefix = c;
             continue;
         }
 
-        if ((cti = first_references [prefix])) {    // if any longer strings are built on the current prefix...
+        memset (dictionary + next_string, 0, sizeof (encoder_entry_t));
+
+        if ((cti = dictionary [prefix].first_reference)) {          // if any longer strings are built on the current prefix...
             while (1)
-                if (terminators [cti - 256] == c) { // we found a matching string, so we just update the prefix
-                    prefix = cti;                   // to that string and continue without sending anything
+                if (dictionary [cti].terminator == c) {             // we found a matching string, so we just update the prefix
+                    prefix = cti;                                   // to that string and continue without sending anything
                     break;
                 }
-                else if (!next_references [cti - 256]) {    // this string did not match the new character and
-                    next_references [cti - 256] = next;     // there aren't any more, so we'll add a new string
-                    cti = 0;                                // and point to it with "next_reference"
+                else if (!dictionary [cti].next_reference) {        // this string did not match the new character and
+                    dictionary [cti].next_reference = next_string;  // there aren't any more, so we'll add a new string,
+                                                                    // point to it with "next_reference", and also make the
+                    dictionary [next_string].back_reference = cti;  // "back_reference" which is used for recycling entries
+                    cti = 0;
                     break;
                 }
                 else
-                    cti = next_references [cti - 256];      // there are more possible matches to check, so loop back
+                    cti = dictionary [cti].next_reference;          // there are more possible matches to check, so loop back
         }
-        else                                        // no longer strings are based on the current prefix, so now
-            first_references [prefix] = next;       // the current prefix plus the new byte will be the next string
+        else {                                                      // no longer strings are based on the current prefix, so now
+            dictionary [prefix].first_reference = next_string;      // the current prefix plus the new byte will be the next string
+            dictionary [next_string].back_reference = prefix;       // also make the back_reference used for recycling
+            if (prefix >= FIRST_STRING) available_entries--;        // the codes 0-255 are never available for recycling
+        }
 
         // If "cti" is zero, we could not simply extend our "prefix" to a longer string because we did not find a
         // dictionary match, so we send the symbol representing the current "prefix" and add the new string to the
         // dictionary. Since the current byte "c" was not included in the prefix, that now becomes our new prefix.
 
         if (!cti) {
-            WRITE_CODE (prefix, next);              // send symbol for current prefix (0 to next-1)
-            terminators [next - 256] = c;           // newly created string has current byte as the terminator
-            prefix = c;                             // current byte also becomes new prefix for next string
+            WRITE_CODE (prefix, maxcode);               // send symbol for current prefix (0 to maxcode-1)
+            dictionary [next_string].terminator = c;    // newly created string has current byte as the terminator
+            prefix = c;                                 // current byte also becomes new prefix for next string
 
-            // This is where we bump the next string index and decide whether to clear the dictionary and start over.
-            // The triggers for that are either the dictionary is full or we've been outputting too many bytes and
-            // decide to cut our losses before the symbols get any larger. Note that for the dictionary full case we
-            // do NOT send the CLEAR_CODE because the decoder knows about this and we don't want to be redundant.
+            // If the dictionary is not full yet, we bump the maxcode and next_string and check to see if the
+            // dictionary is now full. If it is we set the dictionary_full flag and leave maxcode set to two
+            // less than total_codes because every string entry is now available for matching, but the actual
+            // maximum code is reserved for EOF.
 
-            if (++next == total_codes || output_bytes > 8 + input_bytes + (input_bytes >> 4)) {
-                if (next < total_codes)
-                    WRITE_CODE (CLEAR_CODE, next);
+            if (!dictionary_full) {
+                dictionary_full = (++next_string > max_available_code);
+                maxcode++;
+            }
 
-                // clear the dictionary and reset the byte counters -- basically everything starts over
-                // except that we keep the last pending "prefix" (which, of course, was never sent)
+            // If the dictionary is full we look for an entry to recycle starting at next_string (the one we
+            // just created or recycled) plus one (with check for wrap check). We know there is one because at
+            // a minimum the string we just added. This also takes care of removing the entry to be recycled
+            // (which is possible/easy because no longer strings have been based on it).
 
-                memset (first_references, 0, total_codes * sizeof (first_references [0]));
-                memset (next_references, 0, (total_codes - 256) * sizeof (next_references [0]));
-                memset (terminators, 0, (total_codes - 256) * sizeof (terminators [0]));
-                input_bytes = output_bytes = 0;
-                next = FIRST_STRING;
+            if (dictionary_full) {
+                for (next_string++; next_string <= max_available_code || (next_string = FIRST_STRING); next_string++)
+                    if (!dictionary [next_string].first_reference)
+                        break;
+
+                cti = dictionary [next_string].back_reference;  // dictionary [cti] references the entry we're
+                                                                // trying to recycle (either as a first or a next)
+
+                if (dictionary [cti].first_reference == next_string) {
+                    dictionary [cti].first_reference = dictionary [next_string].next_reference;
+
+                    // if we just cleared a first reference, and that string is not 0-255,
+                    // then that's a newly available entry
+                    if (!dictionary [cti].first_reference && cti >= FIRST_STRING)
+                        available_entries++;
+                }
+                else if (dictionary [cti].next_reference == next_string)    // fixup a "next_reference"
+                    dictionary [cti].next_reference = dictionary [next_string].next_reference;
+
+                // If the entry we're recycling had a next reference, then update the back reference
+                // so it's completely out of the chain. Of course we know it didn't have a first
+                // reference because then we wouldn't be recycling it.
+
+                if (dictionary [next_string].next_reference)
+                    dictionary [dictionary [next_string].next_reference].back_reference = cti;
+
+                // This check is technically not needed because there will always be an available entry
+                // (the last string we added at a minimum) but we don't want to get in a situation where
+                // we only have a few entries that we're cycling though. I pulled the limits (16 entries
+                // or 1% of total) out of a hat.
+
+                if (available_entries < 16 || available_entries * 100 < max_available_entries) {
+                    // clear the dictionary and reset the byte counters -- basically everything starts over
+                    // except that we keep the last pending "prefix" (which, of course, was never sent)
+
+                    WRITE_CODE (CLEAR_CODE, maxcode);
+                    memset (dictionary, 0, 256 * sizeof (encoder_entry_t));
+                    available_entries = max_available_entries;
+                    next_string = maxcode = FIRST_STRING;
+                    input_bytes = output_bytes = 65536;
+                    dictionary_full = 0;
+                }
+            }
+
+            // This is similar to the above check, except that it's used whether the dictionary is full or not.
+            // It uses an exponentially decaying average of the current compression ratio, so it can terminate
+            // very early if the incoming data is uncompressible or it can terminate any later time that the
+            // dictionary no longer compresses the incoming stream.
+
+            if (output_bytes > input_bytes + (input_bytes >> 4)) {
+                WRITE_CODE (CLEAR_CODE, maxcode);
+                memset (dictionary, 0, 256 * sizeof (encoder_entry_t));
+                available_entries = max_available_entries;
+                next_string = maxcode = FIRST_STRING;
+                input_bytes = output_bytes = 65536;
+                dictionary_full = 0;
+            }
+            else {
+                output_bytes -= output_bytes >> 8;
+                input_bytes -= input_bytes >> 8;
             }
         }
     }
@@ -194,18 +310,18 @@ int lzw_compress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void 
     // we're done with input, so if we've received anything we still need to send that pesky pending prefix...
 
     if (prefix != NULL_CODE) {
-        WRITE_CODE (prefix, next);
+        WRITE_CODE (prefix, maxcode);
 
-        if (++next == total_codes)  // watch for clearing to the first string to stay in step with the decoder!
-            next = FIRST_STRING;    // (this was actually a corner-case bug that did not trigger often)
+        if (!dictionary_full)
+            maxcode++;
     }
 
-    WRITE_CODE (next, next);        // the maximum possible code is always reserved for our END_CODE
+    WRITE_CODE (maxcode, maxcode);  // the maximum possible code is always reserved for our END_CODE
 
     if (bits)                       // finally, flush any pending bits from the shifter
         (*dst)(shifter, dstctx);
 
-    free (terminators); free (next_references); free (first_references);
+    free (dictionary);
     return 0;
 }
 
@@ -220,12 +336,18 @@ int lzw_compress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void 
  * (but simple applications can ignore these).
  */
 
+typedef struct {
+    unsigned char terminator, extra_references;
+    unsigned short prefix;
+} decoder_entry_t;
+
 int lzw_decompress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), void *srcctx)
 {
-    int read_byte, next = FIRST_STRING, prefix = CLEAR_CODE, bits = 0, total_codes;
-    unsigned char *terminators, *reverse_buffer;
-    unsigned long shifter = 0;
-    unsigned short *prefixes;
+    unsigned int maxcode = FIRST_STRING, next_string = FIRST_STRING - 1, prefix = CLEAR_CODE;
+    unsigned int dictionary_full = 0, max_available_code, total_codes;
+    unsigned int shifter = 0, bits = 0, read_byte, i;
+    unsigned char *reverse_buffer, *referenced;
+    decoder_entry_t *dictionary;
 
     if ((read_byte = ((*src)(srcctx))) == EOF || (read_byte & 0xf8))  //sanitize first byte
         return 1;
@@ -233,12 +355,25 @@ int lzw_decompress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), voi
     // based on the "maxbits" parameter, compute total codes and allocate dictionary storage
 
     total_codes = 512 << (read_byte & 0x7);
-    reverse_buffer = malloc ((total_codes - 256) * sizeof (reverse_buffer [0]));
-    prefixes = malloc ((total_codes - 256) * sizeof (prefixes [0]));
-    terminators = malloc ((total_codes - 256) * sizeof (terminators [0]));
+    max_available_code = total_codes - 2;
+    dictionary = malloc (total_codes * sizeof (decoder_entry_t));
+    reverse_buffer = malloc (total_codes - 256);
+    referenced = malloc (total_codes / 8);  // bitfield indicating code is referenced at least once
 
-    if (!reverse_buffer || !prefixes || !terminators)       // check for malloc() failure
+    // Note that to implement the dictionary entry recycling we have to keep track of how many
+    // longer strings are based on each string in the dictionary. This can be between 0 (no
+    // references) to 256 (every possible next byte), but unfortunately that's one more value
+    // than what can be stored in a byte. The solution is to have a single bit for each entry
+    // indicating any references (i.e., the code cannot be recycled) and an additional byte
+    // in the dictionary entry struct counting the "extra" references (beyond one).
+
+    if (!reverse_buffer || !dictionary)         // check for malloc() failure
         return 1;
+
+    for (i = 0; i < 256; ++i) {                 // these never change
+        dictionary [i].prefix = NULL_CODE;
+        dictionary [i].terminator = i;
+    }
 
     // This is the main loop where we read input symbols. The values range from 0 to the code value
     // of the "next" string in the dictionary (although the actual "next" code cannot be used yet,
@@ -246,23 +381,21 @@ int lzw_decompress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), voi
     // stream is actually an error because we should have gotten the END_CODE first.
 
     while (1) {
-        int code_bits = next < 4096 ?
-            (next < 1024  ? 8  + (next >= 512)  : 10 + (next >= 2048)) :
-            (next < 16384 ? 12 + (next >= 8192) : 14 + (next >= 32768));
-        int extras = (1 << (code_bits + 1)) - next - 1, code;
+        unsigned int code_bits = CODE_BITS (maxcode), code;
+        unsigned int extras = (2 << code_bits) - maxcode - 1;
 
         do {
             if ((read_byte = ((*src)(srcctx))) == EOF) {
-                free (terminators); free (prefixes); free (reverse_buffer);
+                free (dictionary); free (reverse_buffer); free (referenced);
                 return 1;
             }
 
-            shifter |= (long) read_byte << bits;
+            shifter |= read_byte << bits;
         } while ((bits += 8) < code_bits);
 
         // first we assume the code will fit in the minimum number of required bits
 
-        code = (int) shifter & ((1 << code_bits) - 1);
+        code = shifter & ((1 << code_bits) - 1);
         shifter >>= code_bits;
         bits -= code_bits;
 
@@ -272,11 +405,11 @@ int lzw_decompress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), voi
         if (code >= extras) {
             if (!bits) {
                 if ((read_byte = ((*src)(srcctx))) == EOF) {
-                    free (terminators); free (prefixes); free (reverse_buffer);
+                    free (dictionary); free (reverse_buffer); free (referenced);
                     return 1;
                 }
 
-                shifter = (long) read_byte;
+                shifter = read_byte;
                 bits = 8;
             }
 
@@ -285,46 +418,96 @@ int lzw_decompress (void (*dst)(int,void*), void *dstctx, int (*src)(void*), voi
             bits--;
         }
 
-        if (code == next)                   // sending the maximum code is reserved for the end of the file
+        if (code == maxcode)                // sending the maximum code is reserved for the end of the file
             break;
-        else if (code == CLEAR_CODE)        // otherwise check for a CLEAR_CODE to start over early
-            next = FIRST_STRING;
+        else if (code == CLEAR_CODE) {      // otherwise check for a CLEAR_CODE to start over early
+            next_string = FIRST_STRING - 1;
+            maxcode = FIRST_STRING;
+            dictionary_full = 0;
+        }
         else if (prefix == CLEAR_CODE) {    // this only happens at the first symbol which is always sent
             (*dst)(code, dstctx);           // literally and becomes our initial prefix
-            next++;
+            next_string++;
+            maxcode++;
         }
         // Otherwise we have a valid prefix so we step through the string from end to beginning storing the
         // bytes in the "reverse_buffer", and then we send them out in the proper order. One corner-case
         // we have to handle here is that the string might be the same one that is actually being defined
-        // now (code == next-1). Also, the first 256 entries of "terminators" and "prefixes" are fixed and
-        // not allocated, so that messes things up a bit.
+        // now (code == next_string).
         else {
-            int cti = (code == next-1) ? prefix : code;
+            unsigned int cti = (code == next_string) ? prefix : code;
             unsigned char *rbp = reverse_buffer, c;
 
-            do *rbp++ = cti < 256 ? cti : terminators [cti - 256];      // step backward through string...
-            while ((cti = (cti < 256) ? NULL_CODE : prefixes [cti - 256]) != NULL_CODE);
+            do {
+                *rbp++ = dictionary [cti].terminator;
+                if (rbp == reverse_buffer + total_codes - 256) {
+                    free (dictionary); free (reverse_buffer); free (referenced);
+                    return 1;
+                }
+            } while ((cti = dictionary [cti].prefix) != NULL_CODE);
 
             c = *--rbp;     // the first byte in this string is the terminator for the last string, which is
                             // the one that we'll create a new dictionary entry for this time
 
-            do (*dst)(*rbp, dstctx);                // send string in corrected order (except for the terminator
-            while (rbp-- != reverse_buffer);        // which we don't know yet)
+            do      // send string in corrected order (except for the terminator which we don't know yet)
+                (*dst)(*rbp, dstctx);
+            while (rbp-- != reverse_buffer);
 
-            if (code == next-1)
+            if (code == next_string) {
                 (*dst)(c,dstctx);
+            }
 
-            prefixes [next - 1 - 256] = prefix;     // now update the next dictionary entry with the new string
-            terminators [next - 1 - 256] = c;       // (but we're always one behind, so it's not the string just sent)
+            // This should always execute (the conditional is to catch corruptions) and is where we add a new string to
+            // the dictionary, either at the end or elsewhere when we are "recycling" entries that were never referenced
 
-            if (++next == total_codes)              // check for full dictionary, which forces a reset (and, BTW,
-                next = FIRST_STRING;                // means we'll never use the dictionary entry we just wrote)
+            if (next_string >= FIRST_STRING && next_string < total_codes) {
+                if (referenced [prefix >> 3] & (1 << (prefix & 7)))     // increment reference count on prefix
+                    dictionary [prefix].extra_references++;
+                else
+                    referenced [prefix >> 3] |= 1 << (prefix & 7);
+
+                dictionary [next_string].prefix = prefix;       // now update the next dictionary entry with the new string
+                dictionary [next_string].terminator = c;        // (but we're always one behind, so it's not the string just sent)
+                dictionary [next_string].extra_references = 0;  // newly created string has not been referenced
+                referenced [next_string >> 3] &= ~(1 << (next_string & 7));
+            }
+
+            // If the dictionary is not full yet, we bump the maxcode and next_string and check to see if the
+            // dictionary is now full. If it is we set the dictionary_full flag and set next_string back to the
+            // beginning of the dictionary strings to start recycling them. Note that then maxcode will remain
+            // two less than total_codes because every string entry is available for matching, and the actual
+            // maximum code is reserved for EOF.
+
+            if (!dictionary_full) {
+                maxcode++;
+
+                if (++next_string > max_available_code) {
+                    dictionary_full = 1;
+                    maxcode--;
+                }
+            }
+
+            // If the dictionary is full we look for an entry to recycle starting at next_string (the one we
+            // created or recycled) plus one. We know there is one because at a minimum the string we just added
+            // has not been referenced). This also takes care of removing the entry to be recycled (which is
+            // possible/easy because no longer strings have been based on it).
+
+            if (dictionary_full) {
+                for (next_string++; next_string <= max_available_code || (next_string = FIRST_STRING); next_string++)
+                    if (!(referenced [next_string >> 3] & (1 << (next_string & 7))))
+                        break;
+
+                if (dictionary [dictionary [next_string].prefix].extra_references)
+                    dictionary [dictionary [next_string].prefix].extra_references--;
+                else
+                    referenced [dictionary [next_string].prefix >> 3] &= ~(1 << (dictionary [next_string].prefix & 7));
+            }
         }
 
         prefix = code;      // the code we just received becomes the prefix for the next dictionary string entry
                             // (which we'll create once we find out the terminator)
     }
 
-    free (terminators); free (prefixes); free (reverse_buffer);
+    free (dictionary); free (reverse_buffer); free (referenced);
     return 0;
 }

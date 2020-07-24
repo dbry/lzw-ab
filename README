@@ -12,16 +12,27 @@ high speed compression or decompression facilities where lots of RAM for
 large dictionaries might not be available. I have used this in several
 projects for storing compressed firmware images, and once I even coded the
 decompressor in Z-80 assembly language for speed! Depending on the maximum
-symbol size selected, the implementation can require from 1024 to 261120
+symbol size selected, the implementation can require from 2368 to 335616
 bytes of RAM for decoding (and about half again more for encoding).
+
+This is a streaming compressor in that the data is not divided into blocks
+and no context information like dictionaries or Huffman tables are sent
+ahead of the compressed data (except for one byte to signal the maximum
+bit depth). This limits the maximum possible compression ratio compared to
+algorithms that significantly preprocess the data, but with the help of
+some enhancements to the LZW algorithm (described below) it is able to
+compress better than the UNIX "compress" utility (which is also LZW) and
+is in fact closer to and sometimes beats the compression level of "gzip".
 
 The symbols are stored in "adjusted binary" which provides somewhat better
 compression (with virtually no speed penalty) compared to the fixed word
-sizes normally used. To ensure good performance on data with varying
-characteristics (like executable images) the encoder resets as soon as the
-dictionary is full. Also, worst-case performance is limited to about 8%
-inflation by catching poor performance and forcing an early reset before
-longer symbols are sent.
+sizes normally used. Once the dictionary is full, the encoder returns to
+the beginning and recycles string codes that have not been used yet for
+longer strings. In this way the dictionary constantly "churns" based on the
+the incoming stream, thereby improving and adapting to optimal compression.
+The compression performance is constantly monitored and a dictionary flush
+is forced on stretches of negative compression which limits worst-case
+performance to about 8% inflation.
 
 LZW-AB consists of three standard C files: the library, a command-line
 filter demo using pipes, and a command-line test harness. Each program
@@ -42,7 +53,7 @@ cl -O2 lzwfilter.c lzwlib.c
 cl -O2 lzwtester.c lzwlib.c
 
 There are Windows binaries (built on MinGW) for the filter and the tester on the
-GitHub release page (v2). The "help" display for the filter looks like this:
+GitHub release page (v3). The "help" display for the filter looks like this:
 
  Usage:     lzwfilter [-options] [< infile] [> outfile]
 
@@ -53,9 +64,20 @@ GitHub release page (v2). The "help" display for the filter looks like this:
            -1     = maximum symbol size = 9 bits
            -2     = maximum symbol size = 10 bits
            -3     = maximum symbol size = 11 bits
-           -4     = maximum symbol size = 12 bits (default)
+           -4     = maximum symbol size = 12 bits
            -5     = maximum symbol size = 13 bits
            -6     = maximum symbol size = 14 bits
            -7     = maximum symbol size = 15 bits
-           -8     = maximum symbol size = 16 bits
+           -8     = maximum symbol size = 16 bits (default)
            -v     = verbose (display ratio and checksum)
+
+Here's the "help" display for the tester:
+
+ Usage:     lzwtester [options] file [...]
+
+ Options:   -1 ... -8 = test using only specified max symbol size (9 - 16)
+            -0        = cycle through all maximum symbol sizes (default)
+            -e        = exhaustive test (by successive truncation)
+            -f        = fuzz test (randomly corrupt compressed data)
+            -q        = quiet mode (only reports errors and summary)
+
